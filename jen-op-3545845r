@@ -1,0 +1,110 @@
+node {
+        stage('Op-3545845R-S1') {
+        sh '''
+                    # Runs on puppet master server
+                    IMAGE_NAME="3545845r-qa-svr-backup"
+                    IMAGE_TAG="latest"
+                    CONTAINER_NAME="3545845r-qa-svr"
+                    FULL_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+                    NEW_IMAGE_NAME="${IMAGE_NAME}:v1.0.0"
+                    if docker image inspect "$FULL_IMAGE" > /dev/null 2>&1; then
+                        echo "Image $FULL_IMAGE exists. Renaming..."
+                        docker tag "$FULL_IMAGE" "$NEW_IMAGE_NAME"
+                    else
+                        echo "Image $FULL_IMAGE does not exist. Proceeding..."
+                    fi
+
+                    docker commit "$CONTAINER_NAME" "$FULL_IMAGE"
+                    echo "Backup complete."
+                    cd /etc/puppetlabs/bolt-project
+                    bolt script run /etc/puppetlabs/bolt-project/3545845r_script.sh --targets 3545845r-qa-svr
+                    cd /var/lib/jenkins/workspace/3545845r-operate-pipeline
+                '''
+    }
+    stage('Op-3545845r-S2') {
+        sh 'curl -Is localhost:33200 | head -n 1 > qa-result-file'
+        sh 'cat qa-result-file'
+    }
+    stage('Op-3545845r-S3') {
+         script {
+             try {
+                 def proceed = input(
+                 id: 'Proceed', 
+                 message: 'Continue the pipeline?', 
+                 parameters: [
+                     choice(
+                            choices: ['Proceed to Roll out to Prod server', 'Roll back QA server'],
+                            description: 'Please select an option',
+                            name: 'decision'
+                     )
+                 ]
+                 )
+                 echo 'Continue pipeline'
+             } catch (Exception e) {
+                 echo 'Exception occurred: ' + e.toString()
+                 sh 'docker --version'
+                 sh 'docker rm -f 3545845r-qa-svr'
+                 sh '''
+                     BOLT_PUB_KEY=$(cat /etc/puppetlabs/bolt/id_rsa.pub)
+                     docker run --name 3545845r-qa-svr --hostname 3545845r-qa-svr.localdomain --network customnetwork --add-host=pm3545845r.ap-southeast-1.compute.internal:172.31.18.51  --ip=192.168.100.110 -e BOLT_PUBLIC_KEY="$BOLT_PUB_KEY" -p 33200:80 -d 3545845r-qa-svr-backup:latest
+                 '''
+                 sh 'cd /etc/puppetlabs/bolt-project && bolt command run "/opt/puppetlabs/bin/puppet resource service apache2 ensure=running" -t 3545845r-qa-svr'
+                 echo "Rollback of QA server is successful"
+                 error('Aborted')
+             }
+         }
+    }
+    stage('Op-3545845R-S4') {
+        sh '''
+                    # Runs on puppet master server
+                    IMAGE_NAME="3545845r-prod-svr-backup"
+                    IMAGE_TAG="latest"
+                    CONTAINER_NAME="3545845r-prod-svr"
+                    FULL_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}"
+                    NEW_IMAGE_NAME="${IMAGE_NAME}:v1.0.0"
+                    if docker image inspect "$FULL_IMAGE" > /dev/null 2>&1; then
+                        echo "Image $FULL_IMAGE exists. Renaming..."
+                        docker tag "$FULL_IMAGE" "$NEW_IMAGE_NAME"
+                    else
+                        echo "Image $FULL_IMAGE does not exist. Proceeding..."
+                    fi
+
+                    docker commit "$CONTAINER_NAME" "$FULL_IMAGE"
+                    echo "Backup complete."
+                    cd /etc/puppetlabs/bolt-project
+                    bolt script run /etc/puppetlabs/bolt-project/3545845r_script.sh --targets 3545845r-prod-svr
+                    cd /var/lib/jenkins/workspace/3545845r-operate-pipeline
+                '''
+    }
+    stage('Op-3545845r-S5') {
+        sh 'curl -Is localhost:33500 | head -n 1 > prod-result-file'
+        sh 'cat prod-result-file'
+    }
+    stage('Op-3545845r-S6') {
+         script {
+             try {
+                 def proceed = input(
+                 id: 'Proceed', 
+                 message: 'Continue the pipeline?', 
+                 parameters: [
+                     choice(
+                            choices: ['Proceed to release to production', 'Roll back prod server'],
+                            description: 'Please select an option',
+                            name: 'decision'
+                     )
+                 ]
+                 )
+             } catch (Exception e) {
+                 echo 'Exception occurred: ' + e.toString()
+                 sh 'docker --version'
+                 sh 'docker rm -f 3545845r-prod-svr'
+                 sh '''
+                     BOLT_PUB_KEY=$(cat /etc/puppetlabs/bolt/id_rsa.pub)
+                     docker run --name 3545845r-prod-svr --hostname 3545845r-prod-svr.localdomain --network customnetwork --add-host=pm3545845r.ap-southeast-1.compute.internal:172.31.18.51  --ip=192.168.100.220 -e BOLT_PUBLIC_KEY="$BOLT_PUB_KEY" -p 33500:80 -d 3545845r-prod-svr-backup:latest
+                 '''
+                 sh 'cd /etc/puppetlabs/bolt-project && bolt command run "/opt/puppetlabs/bin/puppet resource service apache2 ensure=running" -t 3545845r-prod-svr'
+                 echo "Rollback of prod server is successful"
+             }
+         }
+    }
+}
